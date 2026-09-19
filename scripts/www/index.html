@@ -1,0 +1,1657 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="screen-orientation" content="landscape">
+<meta name="orientation" content="landscape">
+<title>核苷酸组装互动演示 · 三关</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#e8eef5;
+    -webkit-user-select:none;user-select:none;touch-action:none;
+    font-family:"Microsoft YaHei","PingFang SC","WenQuanYi Micro Hei",sans-serif;}
+  canvas{display:block;width:100%;height:100%;}
+  /* APK/安卓平板口令层：禁止点击空白处误关闭，避免原生 prompt 在 WebView 中被外部触摸取消后卡住 */
+  #passwordModal{position:fixed;left:0;top:0;width:100%;height:100%;height:100dvh;display:none;align-items:flex-start;justify-content:center;z-index:99999;background:rgba(20,30,45,.48);touch-action:auto;box-sizing:border-box;padding:clamp(24px,8vh,90px) 18px 18px;overflow:auto;-webkit-overflow-scrolling:touch;}
+  #passwordModal.show{display:flex;}
+  #passwordBox{position:relative;width:min(520px,78vw);max-width:92vw;max-height:calc(100dvh - 36px);box-sizing:border-box;padding:26px 30px 22px;border-radius:22px;background:rgba(255,255,255,.99);box-shadow:0 16px 50px rgba(0,0,0,.35);text-align:center;color:#263442;flex:0 0 auto;}
+  #passwordTitle{font-size:30px;font-weight:700;margin-bottom:12px;}
+  #passwordHint{font-size:18px;color:#697887;margin-bottom:18px;}
+  #passwordInput{width:100%;box-sizing:border-box;height:54px;border:2px solid #b8c6d4;border-radius:12px;padding:0 16px;font-size:22px;text-align:center;outline:none;background:#f8fafc;touch-action:auto;-webkit-user-select:text;user-select:text;-webkit-appearance:none;position:relative;z-index:2;}
+  #passwordInput:focus{border-color:#5a8cd2;}
+  #passwordError{height:26px;line-height:26px;margin-top:8px;color:#d34b4b;font-size:16px;}
+  #passwordActions{display:flex;gap:14px;justify-content:center;margin-top:12px;}
+  .passwordBtn{min-width:130px;height:50px;border:0;border-radius:12px;font-size:19px;font-weight:700;touch-action:manipulation;}
+  #passwordCancel{background:#e8edf2;color:#4d5a66;}
+  #passwordConfirm{background:#5a8cd2;color:#fff;}
+  #passwordModal, #passwordModal *{pointer-events:auto;}
+  @media (max-height:560px){#passwordModal{padding-top:12px;align-items:flex-start;}#passwordBox{padding:18px 22px 16px;}#passwordTitle{font-size:24px;margin-bottom:8px;}#passwordHint{font-size:16px;margin-bottom:10px;}#passwordInput{height:48px;font-size:20px;}#passwordActions{margin-top:8px;} .passwordBtn{height:44px;font-size:17px;}}
+</style>
+<script>
+// Android APK / WebView 屏幕常亮：优先使用 Screen Wake Lock API
+let wakeLock = null;
+async function keepScreenAwake(){
+  try{
+    if ("wakeLock" in navigator) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    }
+  }catch(e){ console.log("Screen Wake Lock unavailable", e); }
+}
+keepScreenAwake();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") keepScreenAwake();
+});
+window.addEventListener("pageshow", keepScreenAwake);
+</script>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="passwordModal" aria-hidden="true">
+  <div id="passwordBox" role="dialog" aria-modal="true" aria-labelledby="passwordTitle">
+    <div id="passwordTitle">进入第二关</div>
+    <div id="passwordHint">请输入本关口令</div>
+    <input id="passwordInput" type="text" inputmode="text" autocomplete="off" spellcheck="false">
+    <div id="passwordError"></div>
+    <div id="passwordActions">
+      <button id="passwordCancel" class="passwordBtn" type="button">取消</button>
+      <button id="passwordConfirm" class="passwordBtn" type="button">确认</button>
+    </div>
+  </div>
+</div>
+<script>
+/* ================= 安卓横屏兼容 =================
+   尝试让 WebView / 浏览器锁定为横屏。
+   如果宿主 App 不允许网页自行锁定方向，则静默失败，不影响网页运行；
+   此时请在 HTML→APK 转换器中把 Screen Orientation 设为 Landscape。
+*/
+(function(){
+  function lockLandscape(){
+    try {
+      if (screen && screen.orientation && screen.orientation.lock) {
+        var p = screen.orientation.lock("landscape");
+        if (p && p.catch) p.catch(function(){});
+      }
+    } catch(e) {}
+  }
+  lockLandscape();
+  window.addEventListener("load", lockLandscape, {once:true});
+  document.addEventListener("pointerdown", lockLandscape, {once:true, passive:true});
+  document.addEventListener("touchstart", lockLandscape, {once:true, passive:true});
+})();
+
+"use strict";
+
+/* ================= 基础配色 ================= */
+const BG_TOP=[250,251,253], BG_BOTTOM=[232,238,245];
+const LINE_COLOR="rgb(185,195,208)";
+const TEXT_COLOR="rgb(45,55,68)", SUBTEXT_COLOR="rgb(120,130,142)";
+
+const PHOSPHATE_MAIN="rgb(255,170,54)", PHOSPHATE_EDGE="rgb(198,118,12)", PHOSPHATE_HILITE="rgba(255,219,158,0.75)";
+const SUGAR_MAIN="rgb(137,191,232)", SUGAR_EDGE="rgb(66,128,178)", SUGAR_HILITE="rgba(206,231,250,0.78)";
+const DEOXY_MAIN="rgb(86,140,200)", DEOXY_EDGE="rgb(40,88,140)", DEOXY_HILITE="rgba(170,205,240,0.78)";
+const RIBOSE_MAIN="rgb(150,210,200)", RIBOSE_EDGE="rgb(70,150,140)", RIBOSE_HILITE="rgba(215,245,240,0.78)";
+
+const BOND_INNER="rgb(255,255,255)", BOND_OUTER="rgb(219,55,92)", BOND_GLOW="rgba(255,140,160,0.85)";
+const WATER_MAIN="rgb(94,175,245)", WATER_HILITE="rgba(210,235,255,0.9)";
+const SPARK_MAIN="rgb(255,235,150)", SPARK_EDGE="rgb(255,200,80)";
+
+const BUTTON_MAIN="rgb(57,168,137)", BUTTON_HOVER="rgb(44,148,119)", BUTTON_EDGE="rgb(32,116,92)";
+const BUTTON2_MAIN="rgb(90,140,210)", BUTTON2_HOVER="rgb(72,120,190)", BUTTON2_EDGE="rgb(52,96,160)";
+const BTN_ACTIVE="rgb(255,150,60)", BTN_ACTIVE_EDGE="rgb(200,110,30)";
+
+const ENZYME_MAIN="rgb(170,110,220)", ENZYME_EDGE="rgb(110,60,160)", ENZYME_HILITE="rgba(220,190,250,0.7)";
+const ENZYME_TEXT="rgb(60,45,90)";
+const LINK_LINE_COLOR="rgb(150,162,176)";
+const PHOSPHODIESTER_COLOR="rgb(220,80,140)";
+
+const DRAG_HIGHLIGHT=["rgb(255,214,90)","rgb(120,220,255)","rgb(255,150,200)","rgb(160,255,170)"];
+
+const BASE_COLORS={
+  "A":{main:"rgb(238,102,98)",edge:"rgb(185,62,60)"},
+  "T":{main:"rgb(74,156,226)",edge:"rgb(44,110,176)"},
+  "C":{main:"rgb(247,190,60)",edge:"rgb(198,142,20)"},
+  "G":{main:"rgb(86,191,133)",edge:"rgb(46,140,92)"},
+  "U":{main:"rgb(200,120,210)",edge:"rgb(150,70,160)"}
+};
+
+/* ================= 动态几何 ================= */
+const BASE_W_DESIGN = 1920;
+const BASE_H_DESIGN = 1080;
+const SCALE = 1.3;
+
+let VIEW = 1;
+let SUGAR_R, PHOS_R, PHOS_DIAG, BASE_GAP, BASE_W, BASE_H;
+let SUGAR_ROTATION = -90;
+let RIGHT_ANGLE, LEFT_BOTTOM_ANGLE, LEFT_TOP_ANGLE;
+let PHOS_OFFSET, BASE_OFFSET, BOTTOM_OFFSET;
+let LINK_SPACING, SNAP_DIST;
+let P_PHOS_R, P_SUGAR_R, P_BASE_W, P_BASE_H;
+let P_SNAP_DIST_PHOS_SUGAR, P_SNAP_DIST_BASE_SUGAR;
+let P_SNAP_DIST_DIESTER;
+let DIESTER_SUGAR_TRIGGER, DIESTER_SUGAR_VERTICAL_TRIGGER;
+let BOND_GROW_TIME = 0.5;
+let PHOS_SUGAR_GROW_TIME = 0.15; // 磷酸—五碳糖折线连接动画更快
+let ENZYME_RADIUS_BASE = 40;
+
+const DEG = Math.PI / 180;
+
+function computeGeometry(){
+  const shortSide = Math.min(W, H);
+  VIEW = shortSide / BASE_H_DESIGN;
+  VIEW = Math.max(0.45, Math.min(2.2, VIEW));
+
+  SUGAR_R = Math.round(30 * SCALE * VIEW);
+  PHOS_R  = Math.round(22 * SCALE * VIEW);
+  PHOS_DIAG = Math.round(42 * SCALE * VIEW);
+  BASE_GAP = Math.round(64 * SCALE * VIEW);
+  BASE_W   = Math.round(76 * SCALE * VIEW);
+  BASE_H   = Math.round(44 * SCALE * VIEW);
+
+  RIGHT_ANGLE = (SUGAR_ROTATION + 72) * DEG;
+  LEFT_BOTTOM_ANGLE = (SUGAR_ROTATION + 3 * 72) * DEG;
+  LEFT_TOP_ANGLE = (SUGAR_ROTATION + 4 * 72) * DEG;
+
+  const LTV = [
+    SUGAR_R * Math.cos(LEFT_TOP_ANGLE),
+    SUGAR_R * Math.sin(LEFT_TOP_ANGLE)
+  ];
+  PHOS_OFFSET = [
+    LTV[0] + PHOS_DIAG * Math.cos(LEFT_TOP_ANGLE),
+    LTV[1] + PHOS_DIAG * Math.sin(LEFT_TOP_ANGLE) - 8 * SCALE * VIEW
+  ];
+  const RV_DX = SUGAR_R * Math.cos(RIGHT_ANGLE);
+  const RV_DY = SUGAR_R * Math.sin(RIGHT_ANGLE);
+  BASE_OFFSET = [RV_DX + BASE_GAP, RV_DY];
+  BOTTOM_OFFSET = [
+    SUGAR_R * Math.cos(LEFT_BOTTOM_ANGLE),
+    SUGAR_R * Math.sin(LEFT_BOTTOM_ANGLE)
+  ];
+
+  LINK_SPACING = Math.round(118 * SCALE * VIEW);
+  SNAP_DIST = Math.round(68 * SCALE * VIEW);
+
+  P_PHOS_R = PHOS_R;
+  P_SUGAR_R = SUGAR_R;
+  P_BASE_W = BASE_W;
+  P_BASE_H = BASE_H;
+  P_SNAP_DIST_PHOS_SUGAR = Math.round(78 * SCALE * VIEW);
+  P_SNAP_DIST_BASE_SUGAR = Math.round(92 * SCALE * VIEW);
+  /* 二酯键吸附距离：介于普通吸附和更宽松之间，保证能触发又不至于太远 */
+  P_SNAP_DIST_DIESTER = Math.round(80 * SCALE * VIEW);
+
+  // 第3关二酯键触发条件：判断的是“两个核苷酸的五碳糖是否靠近”，
+  // 而不是判断“上方五碳糖左下角到下方磷酸”的距离。
+  // 满足上下相邻关系后，实际成键位置固定为：上方五碳糖左下角 → 下方磷酸。
+  // 以五碳糖中心距离作为触发阈值。当前设计尺寸下约为 117px，
+  // 足够覆盖两个核苷酸上下靠近到“上方糖左下角—下方磷酸”可成键的位置。
+  DIESTER_SUGAR_TRIGGER = Math.round(3.0 * P_SUGAR_R);
+  DIESTER_SUGAR_VERTICAL_TRIGGER = Math.round(2.5 * P_SUGAR_R);
+}
+
+/* ================= Canvas 初始化 ================= */
+const canvas = document.getElementById("cv");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, DPR = 1;
+let enzymeRadius = 40;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  computeGeometry();
+  enzymeRadius = Math.round(ENZYME_RADIUS_BASE * Math.max(0.7, VIEW));
+  buildBackground();
+  layoutButtons();
+
+  if(!sceneInitialized){
+    mode = 1;
+    buildMode1();
+    sceneInitialized = true;
+  }else{
+    // 响应窗口尺寸变化时，仅重算几何参数；不重建零件、不改变零件坐标、不清空已有连接
+    enzymeHome = [Math.round(90 * VIEW), H - Math.round(110 * VIEW)];
+  }
+}
+window.addEventListener("resize", resize);
+canvas.style.touchAction = "none";
+
+
+/* ================= 绘图工具 ================= */
+function pentagonPoints(cx, cy, r, rotation){
+  if(rotation === undefined) rotation = SUGAR_ROTATION;
+  const pts = [];
+  for(let i = 0; i < 5; i++){
+    const a = (rotation + i * 72) * DEG;
+    pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+function capsuleLine(color, p1, p2, width){
+  const [x1, y1] = p1, [x2, y2] = p2;
+  const len = Math.hypot(x2 - x1, y2 - y1);
+  if(len < 0.5) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+}
+
+function capsulePolyline(color, points, width){
+  if(points.length < 2) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  for(let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+  ctx.stroke();
+}
+
+function polygonPath(pts){
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for(let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+}
+
+function phosphateBondPolyline(phosphate_c, sugar_vertex){
+  const [px, py] = phosphate_c, [sx, sy] = sugar_vertex;
+  let dx = sx - px, dy = sy - py;
+  const dist = Math.hypot(dx, dy) || 1;
+  const ux = dx / dist, uy = dy / dist;
+  const base_start = [px + ux * (PHOS_R - 2), py + uy * (PHOS_R - 2)];
+  let nx = -uy, ny = ux;
+  if(ny > 0){ nx = -nx; ny = -ny; }
+  const lift = 9.0 * SCALE * VIEW;
+  const start = [base_start[0] + nx * lift, base_start[1] + ny * lift];
+  const end = [sx - ux * 2, sy - uy * 2];
+  const mx = (start[0] + end[0]) / 2, my = (start[1] + end[1]) / 2;
+  const bend = 10.0 * SCALE * VIEW;
+  const mid = [mx + nx * bend, my + ny * bend];
+  return [start, mid, end];
+}
+
+function sugarPendingPhosphatePolyline(cx, cy){
+  // 仅保留为几何辅助函数，不再作为“未连接提示线”绘制。
+  const pts = pentagonPoints(cx, cy, P_SUGAR_R);
+  const leftTop = pts[4];
+  const phosC = [cx + PHOS_OFFSET[0], cy + PHOS_OFFSET[1]];
+  return phosphateBondPolyline(phosC, leftTop).reverse();
+}
+
+function shadowCircle(cx, cy, r, off, alpha){
+  if(off === undefined) off = [5, 8];
+  if(alpha === undefined) alpha = 0.22;
+  ctx.fillStyle = "rgba(20,25,35," + alpha + ")";
+  ctx.beginPath();
+  ctx.arc(cx + off[0], cy + off[1], r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function shadowPolygon(pts, off, alpha){
+  if(off === undefined) off = [5, 8];
+  if(alpha === undefined) alpha = 0.22;
+  ctx.save();
+  ctx.translate(off[0], off[1]);
+  ctx.fillStyle = "rgba(20,25,35," + alpha + ")";
+  polygonPath(pts);
+  ctx.fill();
+  ctx.restore();
+}
+
+function glossyCircle(cx, cy, r, main, edge, hilite){
+  shadowCircle(cx, cy, r);
+  ctx.fillStyle = edge;
+  ctx.beginPath(); ctx.arc(cx, cy, r + 2, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = main;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  const hx = cx - r * 0.35, hy = cy - r * 0.4, hr = Math.max(2, r * 0.45);
+  ctx.fillStyle = hilite;
+  ctx.beginPath(); ctx.arc(hx, hy, hr, 0, Math.PI * 2); ctx.fill();
+}
+
+function glossyPentagon(cx, cy, r, main, edge, hilite, outline, outlineW){
+  const pts = pentagonPoints(cx, cy, r);
+  shadowPolygon(pts);
+  if(outline && outlineW > 0){
+    const hl = pentagonPoints(cx, cy, r + outlineW);
+    ctx.fillStyle = outline;
+    polygonPath(hl); ctx.fill();
+  }
+  const edgePts = pentagonPoints(cx, cy, r + 3);
+  ctx.fillStyle = edge;
+  polygonPath(edgePts); ctx.fill();
+  ctx.fillStyle = main;
+  polygonPath(pts); ctx.fill();
+  const inner = pentagonPoints(cx, cy - r * 0.1, r * 0.55);
+  ctx.fillStyle = hilite;
+  polygonPath(inner); ctx.fill();
+}
+
+function roundRectPath(x, y, w, h, r){
+  if(r > w / 2) r = w / 2;
+  if(r > h / 2) r = h / 2;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function glossyRect(cx, cy, w, h, main, edge){
+  const x = cx - w / 2, y = cy - h / 2;
+  const rad = Math.max(6, Math.min(13, h * 0.28));
+  ctx.fillStyle = "rgba(20,25,35,0.22)";
+  roundRectPath(x + 5, y + 8, w, h, rad); ctx.fill();
+  ctx.fillStyle = edge;
+  roundRectPath(x - 2, y - 2, w + 4, h + 4, rad + 1); ctx.fill();
+  ctx.fillStyle = main;
+  roundRectPath(x, y, w, h, rad); ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.28)";
+  roundRectPath(x, y, w, h * 0.5, rad); ctx.fill();
+}
+
+function outlinedText(text, cx, cy, font, color, outlineColor, outlineW, alpha){
+  if(alpha === undefined) alpha = 1;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = font;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  if(outlineW > 0){
+    ctx.lineWidth = outlineW * 2;
+    ctx.strokeStyle = outlineColor;
+    ctx.strokeText(text, cx, cy);
+  }
+  ctx.fillStyle = color;
+  ctx.fillText(text, cx, cy);
+  ctx.restore();
+}
+
+function fontPx(basePx, bold){
+  const size = Math.max(9, Math.round(basePx * VIEW));
+  return (bold ? "bold " : "") + size + "px 'Microsoft YaHei','PingFang SC',sans-serif";
+}
+
+/* ================= 数据结构 ================= */
+class Floater{
+  constructor(kind, x, y, duration, text, scale){
+    this.kind = kind; this.x = x; this.y = y; this.age = 0; this.duration = duration;
+    this.text = text || ""; this.drift = (Math.random() * 16 - 8); this.scale = scale || 1;
+  }
+  update(dt){ this.age += dt; this.y -= 36 * VIEW * dt; this.x += this.drift * VIEW * dt; }
+  alpha(){
+    const t = this.age / this.duration;
+    if(t < 0.15) return Math.min(1, t / 0.15);
+    return Math.max(0, 1 - (t - 0.15) / 0.85);
+  }
+  dead(){ return this.age >= this.duration; }
+}
+
+let _partNextId = 1, _partNextZ = 0;
+class Part{
+  constructor(kind, sub, x, y){
+    this.pid = _partNextId++;
+    this.kind = kind; this.sub = sub; this.x = x; this.y = y;
+    this.links = []; this.z = ++_partNextZ;
+  }
+  static bringToFront(p){ p.z = ++_partNextZ; }
+}
+
+class PartLink{
+  constructor(a, b, type){
+    this.a = a; this.b = b;
+    this.type = type || "normal";
+    this.progress = 0;
+  }
+}
+
+/* ================= 全局状态 ================= */
+let mode = 1;                 // 1: 分类关, 2: 拼装核苷酸, 3: 连接核酸
+// 第2关、第3关首次进入时的口令验证；验证成功后本次页面会话内不再重复询问。
+let mode2Unlocked = false;
+let mode3Unlocked = false;
+
+// 自定义口令框：不用 window.prompt，避免安卓 WebView 中“点空白处”把 prompt 意外关闭后导致页面输入状态异常。
+let passwordPendingMode = 0;
+let passwordModalOpen = false;
+const passwordModal = document.getElementById("passwordModal");
+const passwordInput = document.getElementById("passwordInput");
+const passwordError = document.getElementById("passwordError");
+const passwordCancel = document.getElementById("passwordCancel");
+const passwordConfirm = document.getElementById("passwordConfirm");
+const passwordTitle = document.getElementById("passwordTitle");
+const passwordHint = document.getElementById("passwordHint");
+
+function openPasswordModal(nextMode){
+  passwordPendingMode = nextMode;
+  passwordModalOpen = true;
+  passwordTitle.textContent = nextMode === 2 ? "进入第二关" : "进入第三关";
+  passwordHint.textContent = "请输入本关口令";
+  passwordInput.value = "";
+  passwordError.textContent = "";
+  passwordModal.classList.add("show");
+  passwordModal.setAttribute("aria-hidden", "false");
+  // 先让窗口真正绘制，再聚焦输入框。安卓 WebView 中立即 focus 容易出现“键盘出来了、窗口被遮住”的情况。
+  setTimeout(() => {
+    try{
+      passwordInput.focus({preventScroll:true});
+      passwordInput.scrollIntoView({block:"center", inline:"nearest"});
+    }catch(e){}
+  }, 260);
+}
+
+function closePasswordModal(){
+  passwordPendingMode = 0;
+  passwordModalOpen = false;
+  passwordModal.classList.remove("show");
+  passwordModal.setAttribute("aria-hidden", "true");
+  try{ passwordInput.blur(); }catch(e){}
+}
+
+function confirmPasswordModal(){
+  const nextMode = passwordPendingMode;
+  if(!nextMode) return;
+  const password = nextMode === 2 ? MODE2_PASSWORD : MODE3_PASSWORD;
+  const answer = (passwordInput.value || "").trim();
+  if(answer !== password){
+    passwordError.textContent = "口令不正确，请重新输入。";
+    try{ passwordInput.focus(); }catch(e){}
+    return;
+  }
+  if(nextMode === 2) mode2Unlocked = true;
+  else mode3Unlocked = true;
+  closePasswordModal();
+  // 成功验证后再真正切换关卡。此时已解锁，不会再次弹窗。
+  switchMode(nextMode);
+}
+
+passwordCancel.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); closePasswordModal(); });
+passwordConfirm.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); confirmPasswordModal(); });
+passwordInput.addEventListener("keydown", e => {
+  if(e.key === "Enter"){ e.preventDefault(); confirmPasswordModal(); }
+  if(e.key === "Escape"){ e.preventDefault(); closePasswordModal(); }
+});
+// 关键：弹窗外的空白区域只拦截事件，不关闭弹窗；不要 preventDefault，避免安卓输入框无法正常唤起/显示键盘。
+passwordModal.addEventListener("pointerdown", e => { e.stopPropagation(); });
+passwordModal.addEventListener("pointerup", e => { e.stopPropagation(); });
+passwordModal.addEventListener("click", e => { e.stopPropagation(); });
+passwordInput.addEventListener("pointerdown", e => { e.stopPropagation(); });
+passwordInput.addEventListener("click", e => { e.stopPropagation(); });
+// 安卓软键盘弹出后，实时把口令框保持在可视区域内，避免“键盘出现但窗口跑到键盘下面”。
+(function(){
+  if(!window.visualViewport) return;
+  function keepPasswordVisible(){
+    if(!passwordModalOpen) return;
+    try{
+      passwordBox.style.transform = "translateY(0px)";
+      const vv = window.visualViewport;
+      const r = passwordBox.getBoundingClientRect();
+      const topSafe = vv.offsetTop + 8;
+      const bottomSafe = vv.offsetTop + vv.height - 8;
+      let dy = 0;
+      if(r.bottom > bottomSafe) dy = bottomSafe - r.bottom;
+      if(r.top + dy < topSafe) dy = topSafe - r.top;
+      passwordBox.style.transform = `translateY(${Math.round(dy)}px)`;
+    }catch(e){}
+  }
+  visualViewport.addEventListener("resize", keepPasswordVisible);
+  visualViewport.addEventListener("scroll", keepPasswordVisible);
+  window.addEventListener("resize", keepPasswordVisible);
+})();
+
+const MODE2_PASSWORD = "分类";
+const MODE3_PASSWORD = "组装核酸";
+let parts = {};
+let partLinks = {};
+let floaters = [];
+let drags = {};
+let enzymeHome = [0, 0];
+let enzymeDrags = {};
+let enzymeHoverTarget = {};
+let MOUSE_FID = -1;
+let dragOrder = 0;
+let buttonCooldown = 0;
+let sceneInitialized = false;
+let bgCanvas = document.createElement("canvas");
+
+let btnMode1 = {x:0,y:0,w:64,h:64};
+let btnMode2 = {x:0,y:0,w:64,h:64};
+let btnMode3 = {x:0,y:0,w:64,h:64};
+
+function layoutButtons(){
+  const s = Math.round(64 * Math.max(0.7, VIEW));
+  const margin = Math.round(30 * Math.max(0.7, VIEW));
+  const gap = Math.round(8 * Math.max(0.7, VIEW));
+  const totalBtnW = s * 3 + gap * 2;
+  const startX = W - margin - totalBtnW;
+  btnMode1 = {x: startX, y: margin, w: s, h: s};
+  btnMode2 = {x: btnMode1.x + s + gap, y: margin, w: s, h: s};
+  btnMode3 = {x: btnMode2.x + s + gap, y: margin, w: s, h: s};
+}
+
+function rectHit(r, x, y){ return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
+
+/* ================= 音效 ================= */
+let audioCtx = null;
+function initAudio(){
+  if(audioCtx) return;
+  try{ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){}
+}
+function playTone(freqs, dur, vol, decay){
+  if(!audioCtx) return;
+  const sr = audioCtx.sampleRate;
+  const n = Math.floor(sr * dur);
+  const buf = audioCtx.createBuffer(1, n, sr);
+  const data = buf.getChannelData(0);
+  for(let i = 0; i < n; i++){
+    const t = i / sr;
+    let v = 0;
+    for(const f of freqs) v += Math.sin(2 * Math.PI * f * t);
+    v /= freqs.length;
+    v *= Math.exp(-t * decay);
+    data[i] = v * vol;
+  }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const g = audioCtx.createGain();
+  g.gain.value = 0.5;
+  src.connect(g); g.connect(audioCtx.destination);
+  src.start();
+}
+function playSound(name){
+  if(name === "bond") playTone([880, 1320], 0.18, 0.32, 9.0);
+  else if(name === "hydro") playTone([320, 480], 0.22, 0.30, 7.0);
+}
+
+/* ================= 背景 ================= */
+function buildBackground(){
+  bgCanvas.width = Math.max(1, Math.round(W));
+  bgCanvas.height = Math.max(1, Math.round(H));
+  const bctx = bgCanvas.getContext("2d");
+  const grad = bctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, `rgb(${BG_TOP[0]},${BG_TOP[1]},${BG_TOP[2]})`);
+  grad.addColorStop(1, `rgb(${BG_BOTTOM[0]},${BG_BOTTOM[1]},${BG_BOTTOM[2]})`);
+  bctx.fillStyle = grad;
+  bctx.fillRect(0, 0, W, H);
+}
+
+/* ================= 初始化场景 ================= */
+function buildInitialState(){
+  // 兼容旧调用：场景已经存在时，不重建零件、不清空连接。
+  floaters.length = 0;
+  drags = {};
+  enzymeDrags = {};
+  enzymeHoverTarget = {};
+  dragOrder = 0;
+  _partNextZ = Math.max(_partNextZ, ...Object.values(parts).map(p => p.z || 0), 0);
+
+  if(Object.keys(parts).length === 0){
+    _partNextId = 1;
+    buildMode1();
+  }else{
+    enzymeHome = [Math.round(90 * VIEW), H - Math.round(110 * VIEW)];
+  }
+}
+
+function resetScene(){
+  // “重新开始”才真正重置场景；关卡切换绝不调用此函数。
+  parts = {};
+  partLinks = {};
+  _partNextId = 1;
+  _partNextZ = 0;
+  floaters.length = 0;
+  drags = {};
+  enzymeDrags = {};
+  enzymeHoverTarget = {};
+  dragOrder = 0;
+  mode = 1;
+  buildMode1();
+  sceneInitialized = true;
+}
+
+function requestModePassword(nextMode){
+  // 只有“正确输入”才解锁；取消、空白、错误输入都保持锁定。
+  if(nextMode === 2 && mode2Unlocked) return true;
+  if(nextMode === 3 && mode3Unlocked) return true;
+  if(!passwordModalOpen) openPasswordModal(nextMode);
+  return false;
+}
+
+function switchMode(nextMode){
+  if(nextMode === mode) return true;
+  // 第2关和第三关：只有口令验证成功才允许切换；取消或错误输入不会切换关卡。
+  if((nextMode === 2 || nextMode === 3) && !requestModePassword(nextMode)) return false;
+
+  // 关卡切换只改变“哪些连接规则开放”，任何零件位置和已有连接均保持不变。
+  mode = nextMode;
+  floaters.length = 0;
+  drags = {};
+  enzymeDrags = {};
+  enzymeHoverTarget = {};
+  enzymeHome = [Math.round(90 * VIEW), H - Math.round(110 * VIEW)];
+  return true;
+}
+
+/* ---------- 第1关：分类 ---------- */
+function buildMode1(){
+  parts = {};
+  partLinks = {};
+  _partNextId = 1;
+  _partNextZ = 0;
+  enzymeHome = [Math.round(90 * VIEW), H - Math.round(110 * VIEW)];
+
+  const marginX = Math.round(80 * VIEW);
+  const topY = Math.round(120 * VIEW);
+  const bottomY = H - Math.round(200 * VIEW);
+  const leftX = marginX, rightX = W - marginX;
+  const placed = [];
+
+  // 第一关初始散落时尽量避免完全遮挡，方便第一次抓取；
+  // 但拖动过程中允许零件自由重叠，拖走上层零件后即可继续抓取下层零件。
+  function rndPos(){
+    return [leftX + Math.random() * (rightX - leftX), topY + Math.random() * (bottomY - topY)];
+  }
+
+  function placementRadius(kind){
+    if(kind === "phosphate") return P_PHOS_R + 18 * Math.max(0.8, VIEW);
+    if(kind === "sugar") return P_SUGAR_R + 18 * Math.max(0.8, VIEW);
+    // 碱基按矩形对角线的一半估算触摸命中半径，留出少量安全间距。
+    return Math.hypot(P_BASE_W / 2, P_BASE_H / 2) + 18 * Math.max(0.8, VIEW);
+  }
+
+  function rndPosFar(kind, extraGap){
+    extraGap = extraGap || 0;
+    const r = placementRadius(kind) + extraGap;
+    let best = null;
+    let bestScore = -1;
+
+    // 正常情况下这里很快就能找到不重叠的位置。
+    for(let k = 0; k < 1200; k++){
+      const candidate = rndPos();
+      let nearest = Infinity;
+      let ok = true;
+      for(const q of placed){
+        const d = Math.hypot(candidate[0] - q.x, candidate[1] - q.y);
+        const required = r + q.r;
+        nearest = Math.min(nearest, d - required);
+        if(d < required){ ok = false; break; }
+      }
+      if(ok){
+        const item = {x:candidate[0], y:candidate[1], r};
+        placed.push(item);
+        return candidate;
+      }
+      // 万一空间比较紧，记录“离已有零件最远”的候选位置作为备用。
+      if(nearest > bestScore){
+        bestScore = nearest;
+        best = candidate;
+      }
+    }
+
+    // 兜底时继续寻找一个尽可能远的位置，而不是直接采用未经检查的位置。
+    // 这样可以显著降低小屏设备上的遮挡概率。
+    const item = {x:best[0], y:best[1], r};
+    placed.push(item);
+    return best;
+  }
+
+  for(let i = 0; i < 8; i++){
+    const [x, y] = rndPosFar("phosphate", 4 * VIEW);
+    const p = new Part("phosphate", null, x, y); parts[p.pid] = p;
+  }
+  for(let i = 0; i < 4; i++){
+    const [x, y] = rndPosFar("sugar", 6 * VIEW);
+    const p = new Part("sugar", "deoxy", x, y); parts[p.pid] = p;
+  }
+  for(let i = 0; i < 4; i++){
+    const [x, y] = rndPosFar("sugar", 6 * VIEW);
+    const p = new Part("sugar", "ribose", x, y); parts[p.pid] = p;
+  }
+  for(const letter of ["A","G","C","T","A","G","C","U"]){
+    const [x, y] = rndPosFar("base", 6 * VIEW);
+    const p = new Part("base", letter, x, y); parts[p.pid] = p;
+  }
+  return;
+}
+
+/* ---------- 第2关：拼装核苷酸 ---------- */
+function buildMode2(){
+  // 关卡切换不再清空 partLinks，也不重新生成或移动 parts。
+  enzymeHome = [Math.round(90 * VIEW), H - Math.round(110 * VIEW)];
+}
+
+/* ---------- 第3关：连接核酸 ---------- */
+function buildMode3(){
+  // 第3关完全保留当前元素和位置，只额外开放磷酸二酯键。
+  enzymeHome = [Math.round(90 * VIEW), H - Math.round(110 * VIEW)];
+}
+
+/* ================= 命中检测 ================= */
+function pickColor(fid){
+  if(fid === MOUSE_FID) return DRAG_HIGHLIGHT[0];
+  return DRAG_HIGHLIGHT[Math.abs(fid + 1) % DRAG_HIGHLIGHT.length];
+}
+function isEnzymePos(x, y){
+  return Math.hypot(x - enzymeHome[0], y - enzymeHome[1]) <= enzymeRadius + 6;
+}
+function findPartAt(x, y){
+  // 始终优先选择最上层的可抓取零件。第一关允许零件临时重叠；
+  // 拖走上层零件后，底层零件即可重新被命中。
+  const arr = Object.values(parts).sort((a, b) => b.z - a.z);
+  for(const p of arr) if(partHit(p, x, y)) return p;
+  return null;
+}
+function partHit(p, x, y){
+  // 安卓触屏上的手指接触点比鼠标更难精确，因此适当放大命中区域，
+  // 但不改变实际零件的绘制尺寸。
+  const touchPad = 16 * Math.max(0.8, VIEW);
+  if(p.kind === "phosphate") return Math.hypot(x - p.x, y - p.y) <= P_PHOS_R + touchPad;
+  if(p.kind === "sugar") return Math.hypot(x - p.x, y - p.y) <= P_SUGAR_R + touchPad;
+  const rx = p.x - P_BASE_W / 2 - touchPad, ry = p.y - P_BASE_H / 2 - touchPad;
+  return x >= rx && x <= rx + P_BASE_W + 2 * touchPad && y >= ry && y <= ry + P_BASE_H + 2 * touchPad;
+}
+function pointSegDist(px, py, x1, y1, x2, y2){
+  const dx = x2 - x1, dy = y2 - y1;
+  if(dx === 0 && dy === 0) return Math.hypot(px - x1, py - y1);
+  let t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+  t = Math.max(0, Math.min(1, t));
+  const cx = x1 + t * dx, cy = y1 + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+/* ================= 指针事件 ================= */
+function onPointerDown(fid, x, y){
+  if(passwordModalOpen) return;
+  initAudio();
+  // 安卓平板优先按“单指操作”处理，避免多指触摸让同一场景同时出现多个拖拽状态。
+  if(Object.keys(drags).length > 0 || Object.keys(enzymeDrags).length > 0) return;
+
+  if(buttonCooldown <= 0){
+    if(rectHit(btnMode1, x, y) && mode !== 1){ if(switchMode(1)) buttonCooldown = 0.4; return; }
+    if(rectHit(btnMode2, x, y) && mode !== 2){ if(switchMode(2)) buttonCooldown = 0.4; return; }
+    if(rectHit(btnMode3, x, y) && mode !== 3){ if(switchMode(3)) buttonCooldown = 0.4; return; }
+  }
+
+  // 触摸优先抓取零件，再判断水解酶。
+  // 安卓平板上，水解后零件可能恰好落在水解酶附近；
+  // 若先判断水解酶，会导致手指实际上抓到水解酶，表现为“零件拖不动”。
+  const hit = findPartAt(x, y);
+  if(hit){
+    for(const k in drags){ if(drags[k].part === hit) return; }
+
+    Part.bringToFront(hit);
+    dragOrder++;
+
+    // 以当前连接关系重新计算拖动整体，确保水解断开后
+    // 已经脱离的零件/子链立即成为新的独立可拖动整体。
+    const group = Array.from(collectConnectedParts(hit.pid));
+    const wasConnected = group.length > 1;
+
+    drags[fid] = {
+      type:"part",
+      part:hit,
+      offset:[x - hit.x, y - hit.y],
+      color:pickColor(fid),
+      order:dragOrder,
+      group,
+      wasConnected
+    };
+    return;
+  }
+
+  // 只有当前触点没有命中任何零件时，才允许抓取水解酶。
+  if(isEnzymePos(x, y) && mode !== 1){
+    enzymeDrags[fid] = [x, y];
+    return;
+  }
+}
+
+function partVisualRadius(p){
+  if(p.kind === "phosphate") return P_PHOS_R + 4 * VIEW;
+  if(p.kind === "sugar") return P_SUGAR_R + 4 * VIEW;
+  return Math.hypot(P_BASE_W / 2, P_BASE_H / 2) + 4 * VIEW;
+}
+
+function onPointerMove(fid, x, y){
+  if(enzymeDrags[fid]){
+    enzymeDrags[fid] = [x, y];
+    if(mode === 2 || mode === 3) enzymeHoverTarget[fid] = findLinkNear(x, y);
+    else enzymeHoverTarget[fid] = null;
+    return;
+  }
+
+  const d = drags[fid];
+  if(!d) return;
+
+  const p = d.part;
+  let nx = x - d.offset[0], ny = y - d.offset[1];
+  // 第一关允许零件在拖动过程中自由重叠。
+  // 松手后不自动推开；把上层零件拖走后，下面的零件即可继续抓取。
+  const dx = nx - p.x, dy = ny - p.y;
+  if(Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) return;
+
+  // 已连接结构作为整体平移，不再依赖递归遍历。
+  // 这样可以避免触屏过程中连接数组变化导致部分零件失去跟随。
+  for(const pid of d.group || [p.pid]){
+    const q = parts[pid];
+    if(q){ q.x += dx; q.y += dy; }
+  }
+}
+
+function moveConnected(p, dx, dy, moved){
+  for(const [otherPid] of p.links){
+    if(moved.has(otherPid)) continue;
+    const other = parts[otherPid];
+    if(!other) continue;
+    other.x += dx; other.y += dy;
+    moved.add(otherPid);
+    moveConnected(other, dx, dy, moved);
+  }
+}
+
+function onPointerUp(fid){
+  if(enzymeDrags[fid] !== undefined){
+    const pos = enzymeDrags[fid];
+    delete enzymeDrags[fid];
+    delete enzymeHoverTarget[fid];
+    if(pos && (mode === 2 || mode === 3)) applyEnzyme(pos[0], pos[1]);
+    return;
+  }
+
+  const d = drags[fid];
+  if(!d) return;
+  delete drags[fid];
+
+  // 已经连接成整体的结构，只负责整体移动，不在松手时把其中某一个零件单独吸附。
+  // 未连接的单个零件仍保持原来的自动吸附功能。
+  if(!d.wasConnected){
+    if(mode === 2) trySnapParts(d.part, false);
+    else if(mode === 3){
+      trySnapParts(d.part, false);
+      tryAutoConnectDiesters();
+    }
+  }else if(mode === 3){
+    // 第3关即使拖动的是已有核苷酸/核酸链，也继续允许检测二酯键。
+    tryAutoConnectDiesters();
+  }
+}
+
+/* ================= 连接规则 ================= */
+function linkCount(part, kind){
+  let cnt = 0;
+  for(const [otherPid] of part.links){
+    const other = parts[otherPid];
+    if(other && other.kind === kind) cnt++;
+  }
+  return cnt;
+}
+function linkCountDiester(part, kind){
+  let cnt = 0;
+  for(const [otherPid, , type] of part.links){
+    const other = parts[otherPid];
+    if(other && other.kind === kind && type === "diester") cnt++;
+  }
+  return cnt;
+}
+
+function hasNormalPhosphateSugarLink(p){
+  // 这里 p 是五碳糖：必须检查它是否连接着“磷酸”，而不是另一块五碳糖。
+  return p.links.some(([otherPid, , type]) => {
+    const other = parts[otherPid];
+    return other && other.kind === "phosphate" && type === "normal";
+  });
+}
+
+function hasBaseLink(sugar){
+  return linkCount(sugar, "base") >= 1;
+}
+
+function isCompleteNucleotideBySugar(sugar){
+  return sugar && sugar.kind === "sugar" && hasBaseLink(sugar) && hasNormalPhosphateSugarLink(sugar);
+}
+
+function canLink(a, b, allowDiester){
+  if(a.kind === b.kind) return false;
+  const pair = [a.kind, b.kind].sort().join("|");
+
+  if(pair === "base|sugar"){
+    const sugar = a.kind === "sugar" ? a : b;
+    const base = a.kind === "sugar" ? b : a;
+    if(linkCount(sugar, "base") >= 1) return null;
+    if(linkCount(base, "sugar") >= 1) return null;
+    return { type: "normal" };
+  }
+
+  if(pair === "phosphate|sugar"){
+    const sugar = a.kind === "sugar" ? a : b;
+    const phos = a.kind === "sugar" ? b : a;
+
+    // 第二关和第三关的普通磷酸—五碳糖连接必须是“两个连接位点同时为空”。
+    // 一个五碳糖的普通磷酸连接位点一旦已经占用，就不能再在同一位置叠加第二个磷酸；
+    // 同样，一个磷酸的连接位点一旦已经用于连接自己的五碳糖，也不能再用普通键连接第二个五碳糖。
+    // 第三关的另一侧连接属于“磷酸二酯键”，由下面的 diester 规则单独处理。
+    const sugarNormal = linkCount(sugar, "phosphate") - linkCountDiester(sugar, "phosphate");
+    const phosNormal = linkCount(phos, "sugar") - linkCountDiester(phos, "sugar");
+    if(sugarNormal < 1 && phosNormal < 1) return { type: "normal" };
+
+    // 第三关额外开放磷酸二酯键：必须由已经组装完成的两个核苷酸相互连接。
+    if(allowDiester){
+      const sugarDiester = linkCountDiester(sugar, "phosphate");
+      const phosDiester = linkCountDiester(phos, "sugar");
+      const nucleotideSugarReady = isCompleteNucleotideBySugar(sugar);
+      const nucleotidePhosReady = hasNormalPhosphateSugarLink(phos) && phos.links.some(([otherPid, , type]) => {
+        const other = parts[otherPid];
+        return other && other.kind === "sugar" && type === "normal" && isCompleteNucleotideBySugar(other);
+      });
+      // 二酯键也必须使用两个尚未占用的专属连接位点：
+      // 五碳糖左下角空着 + 下方核苷酸的磷酸连接位点空着，二者才能成键。
+      if(sugarDiester < 1 && phosDiester < 1 && nucleotideSugarReady && nucleotidePhosReady){
+        return { type: "diester" };
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
+function linkKey(a, b){ return a < b ? [a, b] : [b, a]; }
+function alreadyLinked(a, b){ const k = linkKey(a, b); return !!partLinks[k[0] + "_" + k[1]]; }
+function setLink(a, b, link){ const k = linkKey(a, b); partLinks[k[0] + "_" + k[1]] = link; }
+
+/* sugar 的二酯键连接点：始终取 leftBottom（索引 3） */
+function sugarAttachPointForDiester(sugar){
+  const pts = pentagonPoints(sugar.x, sugar.y, P_SUGAR_R);
+  return pts[3];
+}
+
+function trySnapParts(dragged, allowDiester){
+  let best = null;
+  for(const pid in parts){
+    const other = parts[pid];
+    if(other === dragged) continue;
+    if(alreadyLinked(dragged.pid, other.pid)) continue;
+    const res = canLink(dragged, other, allowDiester);
+    if(!res) continue;
+
+    const kinds = [dragged.kind, other.kind].sort().join("|");
+    let d;
+
+    if(kinds === "phosphate|sugar"){
+      const sugar = dragged.kind === "sugar" ? dragged : other;
+      const phos = dragged.kind === "sugar" ? other : dragged;
+      if(res.type === "diester"){
+        // 磷酸二酯键：二酯键规则另行处理，这里仍以实际连接点参与检测。
+        const attach = sugarAttachPointForDiester(sugar);
+        d = Math.hypot(phos.x - attach[0], phos.y - attach[1]);
+      }else{
+        // 普通磷酸—五碳糖连接：检测“磷酸中心”与“五碳糖左上角连接点”的距离。
+        // 五碳糖左上角就是普通磷酸—五碳糖键的实际起点。
+        const attach = sugarAttachPoint(sugar, phos);
+        d = Math.hypot(phos.x - attach[0], phos.y - attach[1]);
+      }
+    }else{
+      d = Math.hypot(dragged.x - other.x, dragged.y - other.y);
+    }
+
+    let snapD;
+    if(kinds === "phosphate|sugar"){
+      snapD = res.type === "diester" ? P_SNAP_DIST_DIESTER : P_SNAP_DIST_PHOS_SUGAR;
+    }else{
+      snapD = P_SNAP_DIST_BASE_SUGAR;
+    }
+    if(d <= snapD && (best === null || d < best[0])) best = [d, other, res.type];
+  }
+  if(!best) return;
+  const other = best[1];
+  const type = best[2];
+
+  setLink(dragged.pid, other.pid, new PartLink(dragged.pid, other.pid, type));
+  dragged.links.push([other.pid, 0, type]);
+  other.links.push([dragged.pid, 0, type]);
+
+  /* 只有普通连接才强制把零件放到默认连接点；二酯键不移动任何元素 */
+  if(type === "normal"){
+    if(dragged.kind === "phosphate" && other.kind === "sugar") placePhosOnSugar(dragged, other);
+    else if(dragged.kind === "sugar" && other.kind === "phosphate") placePhosOnSugar(other, dragged);
+    else if(dragged.kind === "base" && other.kind === "sugar") placeBaseOnSugar(dragged, other);
+    else if(dragged.kind === "sugar" && other.kind === "base") placeBaseOnSugar(other, dragged);
+  }
+
+  const mx = (dragged.x + other.x) / 2, my = (dragged.y + other.y) / 2;
+  if(type === "diester"){
+    // 二酯键：冒出水分子的动画
+    floaters.push(new Floater("water", mx + 30, my, 1.0, null, 1));
+    floaters.push(new Floater("text", mx + 14, my - 8, 1.4, "脱掉一分子水", 1));
+  }else{
+    floaters.push(new Floater("spark", mx, my, 0.45, null, 1));
+  }
+  playSound("bond");
+}
+function placePhosOnSugar(phos, sugar){ phos.x = sugar.x + PHOS_OFFSET[0]; phos.y = sugar.y + PHOS_OFFSET[1]; }
+function placeBaseOnSugar(base, sugar){ base.x = sugar.x + BASE_OFFSET[0]; base.y = sugar.y + BASE_OFFSET[1]; }
+
+function getDiesterCandidate(){
+  // 第3关的核心规则：两个“已经组装”的五碳糖中心靠近，就自动形成磷酸二酯键。
+  // 成键位置固定：上方五碳糖左下角 -> 下方核苷酸的磷酸。
+  const sugars = Object.values(parts).filter(p =>
+    p.kind === "sugar" &&
+    hasBaseLink(p) &&
+    hasNormalPhosphateSugarLink(p)
+  );
+
+  let best = null;
+  const trigger = Math.max(2.2 * P_SUGAR_R, 90 * VIEW);
+
+  for(const a of sugars){
+    for(const b of sugars){
+      if(a === b) continue;
+
+      // 根据画面坐标确定“上方五碳糖”和“下方五碳糖”。
+      const upperSugar = a.y < b.y ? a : b;
+      const lowerSugar = a.y < b.y ? b : a;
+      const dy = lowerSugar.y - upperSugar.y;
+      const dx = lowerSugar.x - upperSugar.x;
+      const centerDist = Math.hypot(dx, dy);
+
+      // 只以“两五碳糖靠近”为触发条件；不再用磷酸的位置判断能否触发。
+      if(centerDist > trigger) continue;
+
+      // 找到下方五碳糖所连接的普通磷酸。
+      const lowerPhos = lowerSugar.links
+        .map(([pid, , type]) => ({pid, type}))
+        .filter(x => x.type === "normal")
+        .map(x => parts[x.pid])
+        .find(p => p && p.kind === "phosphate");
+      if(!lowerPhos) continue;
+
+      // 二酯键必须使用两个专属连接位点：
+      // ① 上方五碳糖左下角必须空着；
+      // ② 下方核苷酸的磷酸二酯连接位点必须空着。
+      // 任一位置已经成键，都不能再次在同一位置连接第二个核苷酸。
+      if(alreadyLinked(upperSugar.pid, lowerPhos.pid)) continue;
+      if(linkCountDiester(upperSugar, "phosphate") >= 1) continue;
+      if(linkCountDiester(lowerPhos, "sugar") >= 1) continue;
+
+      const upperAttach = sugarAttachPointForDiester(upperSugar);
+      if(best === null || centerDist < best.sugarDistance){
+        best = {
+          upperSugar,
+          lowerSugar,
+          lowerPhos,
+          upperAttach,
+          sugarDistance: centerDist
+        };
+      }
+    }
+  }
+  return best;
+}
+
+function collectConnectedParts(startPid){
+  // 收集与该五碳糖属于同一“核苷酸/核酸链”的全部零件。
+  // 成键时整体移动，保证原有磷酸—五碳糖、五碳糖—碱基以及已有二酯键的相对位置不变。
+  const visited = new Set();
+  const stack = [startPid];
+  while(stack.length){
+    const pid = stack.pop();
+    if(visited.has(pid)) continue;
+    visited.add(pid);
+    const p = parts[pid];
+    if(!p) continue;
+    for(const [otherPid] of p.links){
+      if(!visited.has(otherPid)) stack.push(otherPid);
+    }
+  }
+  return visited;
+}
+
+function translatePartGroup(pidSet, dx, dy){
+  for(const pid of pidSet){
+    const p = parts[pid];
+    if(p){
+      p.x += dx;
+      p.y += dy;
+    }
+  }
+}
+
+function alignNucleotidesForDiester(upperSugar, lowerSugar){
+  // 松开鼠标完成匹配时：上方核苷酸/核酸链保持完全不动，只移动下方核苷酸（或下方核苷酸链）。
+  // 两个五碳糖中心水平对齐，并保持固定的上下间距；核苷酸内部结构不发生形变。
+  const targetDistance = Math.round(3.5 * P_SUGAR_R);
+  const targetX = upperSugar.x;
+  const targetY = upperSugar.y + targetDistance;
+
+  const group = collectConnectedParts(lowerSugar.pid);
+  const dx = targetX - lowerSugar.x;
+  const dy = targetY - lowerSugar.y;
+  translatePartGroup(group, dx, dy);
+}
+
+function tryAutoConnectDiesters(){
+  if(mode !== 3) return false;
+
+  const candidate = getDiesterCandidate();
+  if(!candidate) return false;
+
+  const {upperSugar, lowerSugar, lowerPhos} = candidate;
+
+  // 松开鼠标后进行自动匹配：上方核苷酸（或上方核苷酸链）完全不动，
+  // 只把下方核苷酸（或下方核苷酸链）移动到标准位置。
+  alignNucleotidesForDiester(upperSugar, lowerSugar);
+
+  // 上方五碳糖左下角与下方核苷酸的磷酸形成磷酸二酯键。
+  const upperAttach = sugarAttachPointForDiester(upperSugar);
+  const link = new PartLink(upperSugar.pid, lowerPhos.pid, "diester");
+  setLink(upperSugar.pid, lowerPhos.pid, link);
+  upperSugar.links.push([lowerPhos.pid, 0, "diester"]);
+  lowerPhos.links.push([upperSugar.pid, 0, "diester"]);
+
+  const mx = (upperAttach[0] + lowerPhos.x) / 2;
+  const my = (upperAttach[1] + lowerPhos.y) / 2;
+  floaters.push(new Floater("water", mx + 30, my, 1.0, null, 1));
+  floaters.push(new Floater("text", mx + 14, my - 8, 1.4, "脱掉一分子水", 1));
+  playSound("bond");
+  return true;
+}
+
+/* ================= 水解酶 ================= */
+function findLinkNear(x, y){
+  let best = null;
+  for(const key in partLinks){
+    const link = partLinks[key];
+    if(link.type !== "normal" && link.type !== "diester") continue;
+    const a = parts[link.a], b = parts[link.b];
+    if(!a || !b) continue;
+    const kinds = [a.kind, b.kind].sort().join("|");
+    // 水解酶可作用于：
+    // 1）磷酸—五碳糖普通连接；
+    // 2）五碳糖—碱基连接；
+    // 3）磷酸二酯键。
+    if(kinds !== "phosphate|sugar" && kinds !== "base|sugar") continue;
+
+    let p1 = [a.x, a.y], p2 = [b.x, b.y];
+    if(kinds === "base|sugar"){
+      const sugar = a.kind === "sugar" ? a : b;
+      const base = a.kind === "sugar" ? b : a;
+      // 五碳糖—碱基键的真实绘制位置：五碳糖右上侧顶点 → 碱基中心。
+      const pts = pentagonPoints(sugar.x, sugar.y, P_SUGAR_R);
+      p1 = pts[1];
+      p2 = [base.x, base.y];
+    }else if(a.kind === "sugar" || b.kind === "sugar"){
+      const sugar = a.kind === "sugar" ? a : b;
+      const other = a.kind === "sugar" ? b : a;
+      if(link.type === "diester") {
+        p1 = [other.x, other.y];
+        p2 = sugarAttachPointForDiester(sugar);
+      }else{
+        p1 = [other.x, other.y];
+        p2 = sugarAttachPoint(sugar, other);
+      }
+    }
+    const d = pointSegDist(x, y, p1[0], p1[1], p2[0], p2[1]);
+    if(d <= 36 * VIEW && (best === null || d < best[0])) best = [d, key];
+  }
+  return best ? best[1] : null;
+}
+
+function applyEnzyme(x, y){
+  const key = findLinkNear(x, y);
+  if(!key) return;
+  const link = partLinks[key];
+  if(!link) return;
+  delete partLinks[key];
+  const a = parts[link.a], b = parts[link.b];
+  if(a) a.links = a.links.filter(([pid]) => pid !== link.b);
+  if(b) b.links = b.links.filter(([pid]) => pid !== link.a);
+
+  // 水解后立即校正两端的连接关系，避免断开的零件继续被当成
+  // 原来核苷酸/核酸链的一部分。这样下一次触摸时会重新计算可移动整体。
+  if(a) a.links = a.links.filter(([pid]) => parts[pid] && Object.values(partLinks).some(l =>
+    (l.a === a.pid && l.b === pid) || (l.b === a.pid && l.a === pid)
+  ));
+  if(b) b.links = b.links.filter(([pid]) => parts[pid] && Object.values(partLinks).some(l =>
+    (l.a === b.pid && l.b === pid) || (l.b === b.pid && l.a === pid)
+  ));
+  if(a && b){
+    const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+    floaters.push(new Floater("spark", cx, cy, 0.45, null, 1));
+    floaters.push(new Floater("text", cx - 20, cy - 30, 1.4, "水解酶切断", 1));
+    playSound("hydro");
+  }
+}
+
+/* ================= 更新 ================= */
+function update(dt){
+  if(buttonCooldown > 0) buttonCooldown = Math.max(0, buttonCooldown - dt);
+  // 第3关的磷酸二酯键只允许在“松开鼠标”的瞬间检测和形成。
+  // 拖动过程中既不自动连键，也不提前显示二酯键。
+  for(const key in partLinks){
+    const link = partLinks[key];
+    if(link.progress < 1){
+      const a = parts[link.a], b = parts[link.b];
+      const isPhosSugar = a && b && [a.kind, b.kind].sort().join("|") === "phosphate|sugar" && link.type === "normal";
+      const growTime = isPhosSugar ? PHOS_SUGAR_GROW_TIME : BOND_GROW_TIME;
+      link.progress = Math.min(1, link.progress + dt / growTime);
+    }
+  }
+  for(const f of floaters) f.update(dt);
+  floaters = floaters.filter(f => !f.dead());
+}
+
+/* ================= 绘制 ================= */
+function drawFloater(f){
+  const alpha = f.alpha();
+  if(alpha <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  if(f.kind === "water"){
+    const x = f.x, y = f.y, r = Math.max(3, 13 * f.scale * VIEW), tipH = 20 * f.scale * VIEW;
+    ctx.fillStyle = WATER_MAIN;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x, y - tipH);
+    ctx.lineTo(x - 9 * f.scale * VIEW, y - 3 * f.scale * VIEW);
+    ctx.lineTo(x + 9 * f.scale * VIEW, y - 3 * f.scale * VIEW);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = WATER_HILITE;
+    ctx.beginPath(); ctx.arc(x - 4 * f.scale * VIEW, y - 3 * f.scale * VIEW, Math.max(1, 4 * f.scale * VIEW), 0, Math.PI * 2); ctx.fill();
+  }else if(f.kind === "spark"){
+    const x = f.x, y = f.y, rr = Math.max(2, 10 * f.scale * VIEW);
+    ctx.fillStyle = SPARK_MAIN;
+    ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.fill();
+    for(let k = 0; k < 6; k++){
+      const ang = (k * 60 + f.age * 160) * DEG;
+      const inner = rr + 3, outer = rr + 14 * VIEW;
+      capsuleLine(SPARK_EDGE,
+        [x + inner * Math.cos(ang), y + inner * Math.sin(ang)],
+        [x + outer * Math.cos(ang), y + outer * Math.sin(ang)], Math.max(1.5, 3 * VIEW));
+    }
+  }else{
+    outlinedText(f.text, f.x, f.y, fontPx(25, true), "#fff", "#000", Math.max(1, 2 * VIEW), alpha);
+  }
+  ctx.restore();
+}
+
+function drawPart(p, highlight){
+  if(p.kind === "phosphate"){
+    glossyCircle(p.x, p.y, P_PHOS_R, PHOSPHATE_MAIN, PHOSPHATE_EDGE, PHOSPHATE_HILITE);
+    if(highlight){
+      ctx.save();
+      ctx.strokeStyle = highlight;
+      ctx.lineWidth = Math.max(2.5, 3.5 * VIEW);
+      ctx.shadowColor = highlight;
+      ctx.shadowBlur = Math.max(4, 7 * VIEW);
+      ctx.beginPath(); ctx.arc(p.x, p.y, P_PHOS_R + 7 * VIEW, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+    outlinedText("P", p.x, p.y, fontPx(20, true), "#fff", "#000", Math.max(1, 2 * VIEW));
+  }else if(p.kind === "sugar"){
+    let main, edge, hi, tag;
+    if(p.sub === "deoxy"){ main = DEOXY_MAIN; edge = DEOXY_EDGE; hi = DEOXY_HILITE; tag = "脱氧核糖"; }
+    else{ main = RIBOSE_MAIN; edge = RIBOSE_EDGE; hi = RIBOSE_HILITE; tag = "核糖"; }
+    glossyPentagon(p.x, p.y, P_SUGAR_R, main, edge, hi, null, 0);
+    if(highlight){
+      // 五碳糖单独拖动或作为连接结构的一部分拖动时，都显示清晰的高亮边缘。
+      const hp = pentagonPoints(p.x, p.y, P_SUGAR_R + 7 * VIEW);
+      ctx.save();
+      ctx.strokeStyle = highlight;
+      ctx.lineWidth = Math.max(2.5, 3.5 * VIEW);
+      ctx.lineJoin = "round";
+      ctx.shadowColor = highlight;
+      ctx.shadowBlur = Math.max(4, 7 * VIEW);
+      polygonPath(hp); ctx.stroke();
+      ctx.restore();
+    }
+    outlinedText(tag, p.x, p.y, fontPx(20, true), "#fff", "#000", Math.max(1, 2 * VIEW));
+  }else{
+    const colorset = BASE_COLORS[p.sub] || {main:"rgb(200,200,200)",edge:"rgb(150,150,150)"};
+    glossyRect(p.x, p.y, P_BASE_W, P_BASE_H, colorset.main, colorset.edge);
+    if(highlight){
+      ctx.save();
+      ctx.strokeStyle = highlight;
+      ctx.lineWidth = Math.max(2.5, 3.5 * VIEW);
+      ctx.shadowColor = highlight;
+      ctx.shadowBlur = Math.max(4, 7 * VIEW);
+      roundRectPath(p.x - P_BASE_W / 2 - 7 * VIEW, p.y - P_BASE_H / 2 - 7 * VIEW, P_BASE_W + 14 * VIEW, P_BASE_H + 14 * VIEW, 16);
+      ctx.stroke();
+      ctx.restore();
+    }
+    outlinedText(p.sub, p.x, p.y, fontPx(26, true), "#fff", "#000", Math.max(1, 2 * VIEW));
+  }
+}
+
+/* 绘制时计算 sugar 连接点：二酯键用 leftBottom，普通磷酸键用 leftTop */
+function sugarAttachPoint(sugar, toPart){
+  const pts = pentagonPoints(sugar.x, sugar.y, P_SUGAR_R);
+  let isDiester = false;
+  for(const [pid, , type] of sugar.links){
+    if(pid === toPart.pid && type === "diester"){ isDiester = true; break; }
+  }
+  if(isDiester) return pts[3];
+  return pts[4];
+}
+
+function drawGlowBond(p1, p2, phase){
+  const pulse = 0.72 + 0.28 * Math.sin(phase * 5.5);
+  // 二酯键稍微细一点，同时把上端向五碳糖内部多延伸一点，
+  // 由于连接线先于零件绘制，这一小段会自然藏在五碳糖下方。
+  const dx = p2[0] - p1[0], dy = p2[1] - p1[1];
+  const dist = Math.hypot(dx, dy) || 1;
+  const endTrim = Math.min(5 * VIEW, Math.max(0, dist * 0.06));
+  const upperExtend = Math.min(7 * VIEW, Math.max(0, dist * 0.08));
+  const ux = dx / dist, uy = dy / dist;
+  const s = [p1[0] - ux * upperExtend, p1[1] - uy * upperExtend];
+  const e = [p2[0] - ux * endTrim, p2[1] - uy * endTrim];
+
+  ctx.save();
+  ctx.globalAlpha = 0.40 + 0.25 * pulse;
+  ctx.shadowColor = "rgba(255,110,190,0.95)";
+  ctx.shadowBlur = Math.max(9, 16 * VIEW);
+  capsuleLine("rgba(255,110,190,0.95)", s, e, Math.max(4, 8 * VIEW));
+  ctx.shadowBlur = Math.max(3, 7 * VIEW);
+  capsuleLine("rgba(255,245,255,0.98)", s, e, Math.max(2, 4 * VIEW));
+  ctx.restore();
+}
+
+function drawDiesterPreview(){
+  if(mode !== 3) return;
+  const candidate = getDiesterCandidate();
+  if(!candidate) return;
+  drawGlowBond(candidate.upperAttach, [candidate.lowerPhos.x, candidate.lowerPhos.y], performance.now() / 1000);
+}
+
+function drawAllBonds(){
+  // 所有真实连接键统一处于“所有零件”的下方图层。
+  // 未连接磷酸时，五碳糖左上角完全不显示任何线。
+  // 只有建立了真实的磷酸—五碳糖连接后，这条键才从连接点生长出来。
+  drawPartLinks();
+}
+
+function partialPolyline(points, progress){
+  if(points.length < 2) return points.slice();
+  const t = Math.max(0, Math.min(1, progress));
+  if(t >= 1) return points.slice();
+
+  let total = 0;
+  const segs = [];
+  for(let i = 0; i < points.length - 1; i++){
+    const a = points[i], b = points[i + 1];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    segs.push(len);
+    total += len;
+  }
+  if(total <= 0.001) return [points[0]];
+
+  const target = total * t;
+  const out = [[points[0][0], points[0][1]]];
+  let acc = 0;
+  for(let i = 0; i < segs.length; i++){
+    const len = segs[i];
+    const a = points[i], b = points[i + 1];
+    if(acc + len <= target){
+      out.push([b[0], b[1]]);
+      acc += len;
+      continue;
+    }
+    const remain = target - acc;
+    const q = len > 0 ? remain / len : 0;
+    out.push([a[0] + (b[0] - a[0]) * q, a[1] + (b[1] - a[1]) * q]);
+    break;
+  }
+  return out;
+}
+
+function drawPartLinks(){
+  // 已建立的真实连接也在统一的底层绘制，绝不覆盖任何零件。
+  for(const key in partLinks){
+    const link = partLinks[key];
+    const a = parts[link.a], b = parts[link.b];
+    if(!a || !b) continue;
+    const kinds = [a.kind, b.kind].sort().join("|");
+
+    let p1, p2;
+    if(a.kind === "sugar" || b.kind === "sugar"){
+      const sugar = a.kind === "sugar" ? a : b;
+      const other = a.kind === "sugar" ? b : a;
+      if(other.kind === "phosphate"){
+        if(link.type === "diester"){
+          // 磷酸二酯键：从上方五碳糖左下角向下方磷酸延伸。
+          // 最终连接关系仍是“上方五碳糖左下角 → 下方磷酸”。
+          p1 = sugarAttachPointForDiester(sugar);
+          p2 = [other.x, other.y];
+        }else{
+          // 普通磷酸—五碳糖键也从五碳糖左上角向磷酸方向生长。
+          // 未连接时 drawPartLinks 不会有对应 link，因此这里不会显示任何线。
+          p1 = sugarAttachPoint(sugar, other);
+          p2 = [other.x, other.y];
+        }
+      }else{
+        const pts = pentagonPoints(sugar.x, sugar.y, P_SUGAR_R);
+        p1 = pts[1];
+        p2 = [other.x, other.y];
+      }
+    }else{
+      p1 = [a.x, a.y]; p2 = [b.x, b.y];
+    }
+
+    if(link.progress <= 0) continue;
+
+    if(link.type === "diester"){
+      // 磷酸二酯键：形成过程中向外延伸，并保持发光效果。
+      const cur = [p1[0] + (p2[0] - p1[0]) * link.progress, p1[1] + (p2[1] - p1[1]) * link.progress];
+      drawGlowBond(p1, cur, performance.now() / 1000);
+    }else if(kinds === "phosphate|sugar"){
+      // 普通磷酸—五碳糖键：从五碳糖左上角开始，严格沿折线路径
+      // 向磷酸方向生长；动画过程中绝不先显示一条直线。
+      const poly = phosphateBondPolyline([p2[0], p2[1]], [p1[0], p1[1]]).reverse();
+      const partial = partialPolyline(poly, link.progress);
+      capsulePolyline(LINK_LINE_COLOR, partial, Math.max(2, 5 * VIEW));
+    }else{
+      const cur = [p1[0] + (p2[0] - p1[0]) * link.progress, p1[1] + (p2[1] - p1[1]) * link.progress];
+      capsuleLine(LINK_LINE_COLOR, p1, cur, Math.max(2, 5 * VIEW));
+    }
+  }
+}
+
+function drawEnzyme(pos, dragging, valid){
+  const x = pos[0], y = pos[1], r = enzymeRadius;
+  let main = ENZYME_MAIN;
+  if(dragging){
+    const c = [170, 110, 220].map(v => Math.round(v * 0.55 + 255 * 0.45));
+    main = `rgb(${c[0]},${c[1]},${c[2]})`;
+  }
+  shadowCircle(x, y, r, [5, 8], 0.24);
+  ctx.fillStyle = ENZYME_EDGE;
+  ctx.beginPath(); ctx.arc(x, y, r + 2, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = main;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "rgb(245,246,250)";
+  ctx.beginPath(); ctx.arc(x + r * 0.35, y - r * 0.3, r * 0.42, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = ENZYME_HILITE;
+  ctx.beginPath(); ctx.arc(x - r * 0.35, y - r * 0.4, r * 0.3, 0, Math.PI * 2); ctx.fill();
+  outlinedText("水解酶", x, y + r + 14, fontPx(20, true), ENZYME_TEXT, "rgba(0,0,0,0)", 0);
+  if(valid){
+    ctx.strokeStyle = "rgb(255,80,80)"; ctx.lineWidth = Math.max(1.5, 2 * VIEW);
+    ctx.beginPath(); ctx.arc(x, y, r + 6, 0, Math.PI * 2); ctx.stroke();
+  }
+}
+
+function drawUI(){
+  ctx.drawImage(bgCanvas, 0, 0, W, H);
+  const mid = Math.floor(W / 2);
+
+  let titleText = "";
+  if(mode === 1) titleText = "第一关：散落的“小分子”究竟是什么？";
+  else if(mode === 2) titleText = "第二关：重建核苷酸";
+  else titleText = "第三关：组装核酸";
+
+  outlinedText(titleText, mid, Math.round(48 * VIEW), fontPx(34, true), TEXT_COLOR, "#fff", Math.max(1.5, 3 * VIEW));
+
+  const busy = Object.keys(drags).length > 0 || Object.keys(enzymeDrags).length > 0;
+
+  function drawBtn(rect, label, baseMain, baseHover, baseEdge, active){
+    const hover = rectHit(rect, mouseX, mouseY);
+    ctx.fillStyle = "rgba(20,25,35,0.28)";
+    roundRectPath(rect.x + 3, rect.y + 5, rect.w, rect.h, 14); ctx.fill();
+    const edgeC = active ? BTN_ACTIVE_EDGE : baseEdge;
+    const mainC = active ? BTN_ACTIVE : (hover && !busy ? baseHover : baseMain);
+    ctx.fillStyle = edgeC;
+    roundRectPath(rect.x - 2, rect.y - 2, rect.w + 4, rect.h + 4, 15); ctx.fill();
+    ctx.fillStyle = mainC;
+    roundRectPath(rect.x, rect.y, rect.w, rect.h, 13); ctx.fill();
+    outlinedText(label, rect.x + rect.w / 2, rect.y + rect.h / 2, fontPx(34, true), "#fff", "rgba(0,0,0,0)", 0);
+  }
+  drawBtn(btnMode1, "1", BUTTON2_MAIN, BUTTON2_HOVER, BUTTON2_EDGE, mode === 1);
+  drawBtn(btnMode2, "2", BUTTON2_MAIN, BUTTON2_HOVER, BUTTON2_EDGE, mode === 2);
+  drawBtn(btnMode3, "3", BUTTON2_MAIN, BUTTON2_HOVER, BUTTON2_EDGE, mode === 3);
+
+}
+
+function drawScene(){
+  // 第一层：所有键。
+  // 第二层：所有零件。
+  // 第三层：正在拖动的高亮零件。
+  drawAllBonds();
+  const dragParts = {};
+  for(const fid in drags){
+    const d = drags[fid];
+    if(d.type === "part"){
+      // 拖动已连接结构时，整个结构的所有零件都显示同一种高亮边缘，
+      // 让用户一眼看出“这是一个整体”，而不是只有被手指按住的零件高亮。
+      for(const pid of (d.group || [d.part.pid])){
+        dragParts[pid] = d.color;
+      }
+    }
+  }
+  const ordered = Object.values(parts).sort((a, b) => a.z - b.z);
+  for(const p of ordered){ if(!dragParts[p.pid]) drawPart(p, null); }
+  for(const p of ordered){ if(dragParts[p.pid]) drawPart(p, dragParts[p.pid]); }
+
+  // 第一关不显示水解酶；第二、三关保留水解酶及其拖拽交互。
+  if(mode === 2 || mode === 3){
+    drawEnzyme(enzymeHome, false, false);
+    for(const fid in enzymeDrags){
+      const valid = enzymeHoverTarget[fid] !== null && enzymeHoverTarget[fid] !== undefined;
+      drawEnzyme(enzymeDrags[fid], true, valid);
+    }
+  }
+}
+
+function draw(){
+  drawUI();
+  drawScene();
+  for(const f of floaters) drawFloater(f);
+}
+
+/* ================= 输入事件绑定 ================= */
+let mouseX = 0, mouseY = 0;
+
+function canvasPointFromEvent(e){
+  const rect = canvas.getBoundingClientRect();
+  const sx = rect.width > 0 ? W / rect.width : 1;
+  const sy = rect.height > 0 ? H / rect.height : 1;
+  return [(e.clientX - rect.left) * sx, (e.clientY - rect.top) * sy];
+}
+
+function pointerFid(e){
+  return e.pointerType === "mouse" ? MOUSE_FID : e.pointerId;
+}
+
+canvas.addEventListener("pointerdown", e => {
+  if(passwordModalOpen){ e.preventDefault(); return; }
+  // 只处理主指针，避免安卓平板多指操作造成状态串线。
+  if(e.pointerType !== "mouse" && e.isPrimary === false) return;
+  e.preventDefault();
+  initAudio();
+  try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
+  const fid = pointerFid(e);
+  const [x, y] = canvasPointFromEvent(e);
+  onPointerDown(fid, x, y);
+});
+
+canvas.addEventListener("pointermove", e => {
+  if(passwordModalOpen){ e.preventDefault(); return; }
+  const [x, y] = canvasPointFromEvent(e);
+  mouseX = x; mouseY = y;
+  if(e.pointerType !== "mouse" && e.isPrimary === false) return;
+  const fid = pointerFid(e);
+  if(drags[fid] !== undefined || enzymeDrags[fid] !== undefined){
+    e.preventDefault();
+    onPointerMove(fid, x, y);
+  }
+});
+
+function pointerEnd(e){
+  const fid = pointerFid(e);
+  onPointerUp(fid);
+  try{
+    if(canvas.hasPointerCapture && canvas.hasPointerCapture(e.pointerId)){
+      canvas.releasePointerCapture(e.pointerId);
+    }
+  }catch(err){}
+}
+
+canvas.addEventListener("pointerup", e => { e.preventDefault(); pointerEnd(e); });
+canvas.addEventListener("pointercancel", e => { e.preventDefault(); pointerEnd(e); });
+
+// Kiwi/安卓在切后台、通知栏下拉或浏览器手势介入时，可能只收到 pointercancel/blur。
+// 这里统一清理拖动状态，避免下次触摸时旧 pointerId 卡住。
+function clearPointerState(){
+  drags = {};
+  enzymeDrags = {};
+  enzymeHoverTarget = {};
+}
+window.addEventListener("blur", clearPointerState);
+document.addEventListener("visibilitychange", () => {
+  if(document.hidden) clearPointerState();
+});
+
+canvas.addEventListener("contextmenu", e => e.preventDefault());
+
+// Kiwi / 安卓长按保护：只阻止浏览器的长按菜单和原生拖拽，
+// 实际拖动仍统一由 Pointer Events 处理，避免 touch/pointer 双重触发。
+canvas.addEventListener("touchstart", e => e.preventDefault(), {passive:false});
+canvas.addEventListener("touchmove", e => {
+  if(Object.keys(drags).length || Object.keys(enzymeDrags).length) e.preventDefault();
+}, {passive:false});
+canvas.addEventListener("touchend", e => e.preventDefault(), {passive:false});
+canvas.addEventListener("touchcancel", e => e.preventDefault(), {passive:false});
+
+
+/* ================= 主循环 ================= */
+let lastTime = performance.now();
+function loop(now){
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+/* ================= 启动 ================= */
+resize();
+requestAnimationFrame(loop);
+</script>
+
+
+
+</body>
+</html>
